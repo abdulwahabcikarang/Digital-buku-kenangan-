@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /artifacts/{appId}/users/{userId}/books
+    // Document ID: {bookId}
+    // Fields:
+    //   - title: string (required, 1-200 chars)
+    //   - author: string (required, 1-100 chars)
+    //   - category: string (required, enum: Novel, Komik, Biografi, Non-Fiksi, Pelajaran)
+    //   - seriesName: string (optional, 0-100 chars)
+    //   - isRead: bool (required)
+    //   - page: string (optional, 0-10 chars)
+    //   - coverUrl: string (optional, valid URL)
+    //   - addedAt: number (required, timestamp)
+    //   - updatedAt: number (required, timestamp)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "abdulwahabcikarang@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['title', 'author', 'category', 'isRead', 'addedAt', 'updatedAt']) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.author is string && data.author.size() >= 1 && data.author.size() <= 100 &&
+             data.category in ['Novel', 'Komik', 'Biografi', 'Non-Fiksi', 'Pelajaran'] &&
+             data.isRead is bool &&
+             data.addedAt is number &&
+             data.updatedAt is number &&
+             (!('seriesName' in data) || (data.seriesName is string && data.seriesName.size() <= 100)) &&
+             (!('page' in data) || (data.page is string && data.page.size() <= 10)) &&
+             (!('coverUrl' in data) || (data.coverUrl is string && data.coverUrl.size() <= 1000000));
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Books collection
+    match /artifacts/{appId}/users/{userId}/books/{bookId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidBook(request.resource.data);
+      allow update: if isOwner(userId) && isValidBook(request.resource.data);
+      allow delete: if isOwner(userId);
+    }
+    
+    // User profiles (for admin check)
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "Book": {
+      "title": "Book",
+      "description": "A book entry in the user's collection",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the book" },
+        "author": { "type": "string", "description": "The author of the book" },
+        "category": { "type": "string", "description": "The category of the book", "enum": ["Novel", "Komik", "Biografi", "Non-Fiksi", "Pelajaran"] },
+        "seriesName": { "type": "string", "description": "The name of the series the book belongs to" },
+        "isRead": { "type": "boolean", "description": "Whether the book has been read" },
+        "page": { "type": "string", "description": "The current page number (if not read)" },
+        "coverUrl": { "type": "string", "description": "The URL of the book cover image" },
+        "addedAt": { "type": "number", "description": "Timestamp when the book was added" },
+        "updatedAt": { "type": "number", "description": "Timestamp when the book was last updated" }
+      },
+      "required": ["title", "author", "category", "isRead", "addedAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/artifacts/{appId}/users/{userId}/books/{bookId}": {
+      "schema": "Book",
+      "description": "Collection of books for a specific user within an app artifact"
+    }
+  }
+}
