@@ -27,7 +27,7 @@ import {
 import { db, auth } from './firebase';
 import firebaseConfig from '../firebase-applet-config.json';
 
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import * as XLSX from 'xlsx';
 
 // --- Constants ---
@@ -121,6 +121,7 @@ interface BookData {
   page: string;
   coverUrl: string;
   price: number;
+  synopsis: string;
   addedAt: number;
   updatedAt: number;
 }
@@ -143,6 +144,7 @@ function BookApp() {
   const [isNetWorthModalOpen, setIsNetWorthModalOpen] = useState(false);
   const [isSearchingApi, setIsSearchingApi] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isManualScanning, setIsManualScanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [currentBook, setCurrentBook] = useState<BookData>(getEmptyBook());
   const [isbnInput, setIsbnInput] = useState('');
@@ -159,27 +161,137 @@ function BookApp() {
 
   const t = THEMES[activeTheme];
 
-  const startScanner = async () => {
-    setIsScanning(true);
-    setTimeout(async () => {
-      try {
-        const html5QrCode = new Html5Qrcode("reader");
-        scannerRef.current = html5QrCode;
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 250, height: 150 } },
-          (decodedText) => {
-            setIsbnInput(decodedText);
-            stopScanner();
-            handleSmartSearch('isbn', decodedText);
-          },
-          () => {}
-        );
-      } catch (err) {
-        console.error("Scanner failed", err);
-        setIsScanning(false);
+  const handleManualCapture = async () => {
+    if (!scannerRef.current || !isScanning) return;
+    
+    setIsManualScanning(true);
+    try {
+      const video = document.querySelector('#reader video') as HTMLVideoElement;
+      if (video) {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0);
+          canvas.toBlob(async (blob) => {
+            if (blob) {
+              const file = new File([blob], "barcode.jpg", { type: "image/jpeg" });
+              
+              // Create temp container for scan
+              const tempId = "reader-manual-temp";
+              let tempElem = document.getElementById(tempId);
+              if (!tempElem) {
+                tempElem = document.createElement('div');
+                tempElem.id = tempId;
+                tempElem.style.display = 'none';
+                document.body.appendChild(tempElem);
+              }
+
+              const html5QrCode = new Html5Qrcode(tempId, {
+                formatsToSupport: [ 
+                  Html5QrcodeSupportedFormats.EAN_13, 
+                  Html5QrcodeSupportedFormats.EAN_8, 
+                  Html5QrcodeSupportedFormats.UPC_A, 
+                  Html5QrcodeSupportedFormats.UPC_E,
+                  Html5QrcodeSupportedFormats.CODE_128,
+                  Html5QrcodeSupportedFormats.CODE_39
+                ],
+                useBarCodeDetectorIfSupported: true,
+                verbose: false,
+                experimentalFeatures: {
+                  useBarCodeDetectorIfSupported: true
+                }
+              });
+              try {
+                const decodedText = await html5QrCode.scanFile(file, true);
+                setIsbnInput(decodedText);
+                stopScanner();
+                handleSmartSearch('isbn', decodedText);
+              } catch (err) {
+                alert("Barcode tidak terdeteksi. Pastikan barcode terlihat jelas dan berada tepat di kotak tengah, lalu coba lagi.");
+              } finally {
+                if (tempElem.parentNode) tempElem.parentNode.removeChild(tempElem);
+              }
+            }
+            setIsManualScanning(false);
+          }, 'image/jpeg', 0.95);
+        }
+      } else {
+        setIsManualScanning(false);
       }
-    }, 100);
+    } catch (err) {
+      console.error("Manual capture failed", err);
+      setIsManualScanning(false);
+    }
+  };
+
+  const startScanner = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("Kamera tidak didukung atau tidak dapat diakses di browser ini. Pastikan Anda membuka aplikasi di tab baru jika di dalam editor.");
+      return;
+    }
+
+    if (scannerRef.current) {
+      await stopScanner();
+    }
+
+    setIsScanning(true);
+    
+    // Tunggu elemen "reader" muncul di DOM
+    let attempts = 0;
+    const maxAttempts = 20;
+    
+    const checkAndStart = async () => {
+      const element = document.getElementById("reader");
+      if (element) {
+        try {
+          const html5QrCode = new Html5Qrcode("reader", {
+            formatsToSupport: [ 
+              Html5QrcodeSupportedFormats.EAN_13, 
+              Html5QrcodeSupportedFormats.EAN_8, 
+              Html5QrcodeSupportedFormats.UPC_A, 
+              Html5QrcodeSupportedFormats.UPC_E,
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39
+            ],
+            useBarCodeDetectorIfSupported: true,
+            verbose: false,
+            experimentalFeatures: {
+              useBarCodeDetectorIfSupported: true
+            }
+          });
+          scannerRef.current = html5QrCode;
+          await html5QrCode.start(
+            { facingMode: "environment" },
+            { 
+              fps: 15, 
+              qrbox: { width: 300, height: 150 }
+            },
+            (decodedText) => {
+              setIsbnInput(decodedText);
+              stopScanner();
+              handleSmartSearch('isbn', decodedText);
+            },
+            () => {} // error callback (ignore common scanning failures)
+          );
+        } catch (err: any) {
+          console.error("Scanner failed to start", err);
+          alert("Gagal mengakses kamera: " + (err.message || err));
+          setIsScanning(false);
+          scannerRef.current = null;
+        }
+      } else if (attempts < maxAttempts) {
+        attempts++;
+        setTimeout(checkAndStart, 100);
+      } else {
+        setIsScanning(false);
+        alert("Elemen kamera gagal dimuat.");
+      }
+    };
+    
+    // Initial delay untuk memberikan waktu mounting modal
+    setTimeout(checkAndStart, 300);
   };
 
   const stopScanner = async () => {
@@ -298,15 +410,35 @@ function BookApp() {
 
     // Fetch synopsis for each selected book
     selected.forEach(async (book) => {
+      // Use cached synopsis if available
+      if (book.synopsis && book.synopsis !== "Sinopsis tidak ditemukan untuk buku ini.") {
+        setSynopsisMap(prev => ({
+          ...prev,
+          [book.id]: { text: book.synopsis, loading: false }
+        }));
+        return;
+      }
+
       // Initialize loading state
       setSynopsisMap(prev => ({
         ...prev,
-        [book.id]: { text: prev[book.id]?.text || '', loading: true }
+        [book.id]: { text: '', loading: true }
       }));
 
       try {
-        const queryStr = `intitle:${book.title}+inauthor:${book.author}`;
-        const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}`);
+        const queryStr = book.author && book.author !== 'Anonim' 
+          ? `intitle:${book.title}+inauthor:${book.author}` 
+          : `intitle:${book.title}`;
+          
+        const apiKey = import.meta.env.VITE_GOOGLE_BOOKS_API_KEY;
+        const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}&maxResults=1${apiKey ? `&key=${apiKey}` : ''}`;
+        
+        const response = await fetch(url);
+
+        if (response.status === 429) {
+          throw new Error("Limit tercapai. Butuh API Key.");
+        }
+
         const data = await response.json();
         
         let synopsisText = "Sinopsis tidak ditemukan untuk buku ini.";
@@ -317,15 +449,21 @@ function BookApp() {
           }
         }
         
+        // Cache the found synopsis to Firestore
+        if (user && synopsisText !== "Sinopsis tidak ditemukan untuk buku ini.") {
+          const path = `artifacts/${appId}/users/${user.uid}/books`;
+          await setDoc(doc(db, path, book.id), { synopsis: synopsisText, updatedAt: Date.now() }, { merge: true });
+        }
+
         setSynopsisMap(prev => ({
           ...prev,
           [book.id]: { text: synopsisText, loading: false }
         }));
-      } catch (err) {
+      } catch (err: any) {
         console.error("Failed to fetch synopsis", err);
         setSynopsisMap(prev => ({
           ...prev,
-          [book.id]: { text: "Gagal memuat sinopsis. Periksa koneksi internet.", loading: false }
+          [book.id]: { text: "Gagal memuat sinopsis: " + (err.message || "Masalah koneksi"), loading: false }
         }));
       }
     });
@@ -338,11 +476,41 @@ function BookApp() {
         <div className="fixed inset-0 z-[110] bg-black flex flex-col">
           <div className="flex justify-between items-center p-4 text-white">
             <h3 className="font-bold">Scan Barcode ISBN</h3>
-            <button onClick={stopScanner} className="p-2 bg-white/10 rounded-full"><X /></button>
+            <button onClick={stopScanner} className="p-2 bg-white/10 rounded-full active:scale-95 transition-all"><X /></button>
           </div>
-          <div id="reader" className="flex-1"></div>
-          <div className="p-8 text-center text-white/60 text-sm">
-            Arahkan kamera ke barcode ISBN buku
+          
+          <div className="flex-1 flex flex-col relative overflow-hidden bg-gray-900">
+            <div id="reader" className="w-full h-full"></div>
+            
+            {/* Guide Overlay */}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+              <div className="w-64 h-40 border-2 border-white/50 rounded-2xl relative shadow-[0_0_0_400px_rgba(0,0,0,0.5)]">
+                <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-white -translate-x-1 -translate-y-1"></div>
+                <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-white translate-x-1 -translate-y-1"></div>
+                <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-white -translate-x-1 translate-y-1"></div>
+                <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-white translate-x-1 translate-y-1"></div>
+              </div>
+              <p className="text-white font-bold text-xs mt-6 bg-black/40 px-4 py-2 rounded-full backdrop-blur-md">Posisikan barcode dalam kotak</p>
+            </div>
+          </div>
+
+          <div className="p-8 bg-black flex flex-col items-center gap-4">
+            <button 
+              onClick={handleManualCapture}
+              disabled={isManualScanning}
+              className={`w-full max-w-sm py-4 rounded-3xl font-black transition-all flex items-center justify-center gap-2 active:scale-95 ${isManualScanning ? 'bg-gray-700 text-gray-400' : 'bg-white text-black shadow-lg shadow-white/20'}`}
+            >
+              {isManualScanning ? (
+                <>
+                  <Loader2 className="w-6 h-6 animate-spin" /> Sedang Memindai...
+                </>
+              ) : (
+                <>
+                  <ScanLine className="w-6 h-6" /> AMBIL BARCODE SEKARANG
+                </>
+              )}
+            </button>
+            <p className="text-white/40 text-[10px] uppercase font-black tracking-widest">Gunakan tombol jika deteksi otomatis lambat</p>
           </div>
         </div>
       )}
@@ -507,47 +675,45 @@ function BookApp() {
             <button onClick={() => setIsNetWorthModalOpen(false)} className="bg-white/20 p-2 rounded-full backdrop-blur-sm active:scale-95 transition-all"><X className="w-5 h-5" /></button>
           </header>
 
-          <div className={`flex-1 overflow-y-auto p-6 space-y-4 pb-40 ${t.bg}`}>
-            {books.length === 0 ? (
-               <div className="text-center py-20 text-gray-400">Belum ada buku dalam koleksi.</div>
-            ) : (
-              books.map((book) => (
-                <div key={book.id} className="bg-white p-4 rounded-3xl shadow-sm border border-gray-50 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-2">
-                  <div className="w-12 h-16 shrink-0 rounded-lg bg-gray-50 overflow-hidden border border-gray-100">
-                    {book.coverUrl ? <img src={book.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <div className={`w-full h-full flex items-center justify-center ${t.accent}`}><Book className={`w-8 h-8 ${t.text} opacity-20`} /></div>}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="font-bold text-gray-800 text-sm truncate">{book.title}</h4>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase">Rp</span>
-                      <input 
-                        type="number" 
-                        defaultValue={book.price || 0}
-                        onBlur={(e) => {
-                          const val = parseInt(e.target.value);
-                          if (!isNaN(val) && val !== book.price) {
-                            handleUpdatePrice(book.id, val);
-                          }
-                        }}
-                        className={`bg-gray-50 rounded-lg px-2 py-1 text-xs font-bold ${t.text} outline-none focus:ring-2 focus:ring-gray-200 transition-all w-24`}
-                        placeholder="Harga..."
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="absolute bottom-10 left-0 right-0 px-8">
-            <div className={`bg-white rounded-3xl p-6 shadow-2xl border ${t.border}`}>
-               <p className="text-center text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Total Nilai Koleksi</p>
-               <h2 className={`text-center text-3xl font-black ${t.text}`}>
+          <div className={`flex-1 overflow-y-auto p-6 space-y-6 ${t.bg}`}>
+            {/* Total Value Card at Top */}
+            <div className={`bg-white rounded-[2rem] p-6 shadow-sm border ${t.border} animate-in fade-in slide-in-from-top-4`}>
+               <p className="text-center text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Total Nilai Koleksi</p>
+               <h2 className={`text-center text-2xl font-black ${t.text}`}>
                  Rp {totalNetWorth.toLocaleString('id-ID')}
                </h2>
-               <button onClick={() => setIsNetWorthModalOpen(false)} className={`w-full mt-4 ${t.primary} text-white font-bold py-3 rounded-2xl shadow-xl active:scale-95 transition-all text-sm`}>
-                 Selesai
-               </button>
+            </div>
+
+            <div className="space-y-4">
+              {books.length === 0 ? (
+                <div className="text-center py-20 text-gray-400">Belum ada buku dalam koleksi.</div>
+              ) : (
+                books.map((book) => (
+                  <div key={book.id} className="bg-white p-4 rounded-3xl shadow-sm border border-gray-50 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-2">
+                    <div className="w-12 h-16 shrink-0 rounded-lg bg-gray-50 overflow-hidden border border-gray-100">
+                      {book.coverUrl ? <img src={book.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <div className={`w-full h-full flex items-center justify-center ${t.accent}`}><Book className={`w-8 h-8 ${t.text} opacity-20`} /></div>}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-bold text-gray-800 text-sm truncate">{book.title}</h4>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">Rp</span>
+                        <input 
+                          type="number" 
+                          defaultValue={book.price || 0}
+                          onBlur={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val !== book.price) {
+                              handleUpdatePrice(book.id, val);
+                            }
+                          }}
+                          className={`bg-gray-50 rounded-lg px-2 py-1 text-xs font-bold ${t.text} outline-none focus:ring-2 focus:ring-gray-200 transition-all w-24`}
+                          placeholder="Harga..."
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -561,15 +727,19 @@ function BookApp() {
           </header>
 
           <form onSubmit={handleSaveBook} className={`flex-1 overflow-y-auto p-6 space-y-6 pb-32 ${t.bg}`}>
-            <div className="flex flex-col items-center gap-3">
-              <div className="relative group">
-                <div className={`w-32 h-44 rounded-2xl bg-white shadow-md border-2 border-dashed ${t.border} overflow-hidden flex items-center justify-center relative`}>
-                  {currentBook.coverUrl ? <img src={currentBook.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <ImageIcon className={`w-10 h-10 ${t.text} opacity-30`} />}
-                  <input type="file" accept="image/*" onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-                </div>
-                <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-white shadow-sm border border-gray-100 rounded-full px-3 py-1 text-[10px] font-bold text-gray-600 pointer-events-none flex items-center gap-1 w-max">
-                  <Camera className="w-3 h-3" /> Ganti Cover
-                </div>
+            <div className="flex flex-col items-center gap-2">
+              <div className={`w-32 h-44 rounded-2xl bg-white shadow-md border-2 border-dashed ${t.border} overflow-hidden flex items-center justify-center relative`}>
+                {currentBook.coverUrl ? <img src={currentBook.coverUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" /> : <ImageIcon className={`w-10 h-10 ${t.text} opacity-30`} />}
+              </div>
+              <div className="flex gap-2">
+                <label className="bg-white shadow-sm border border-gray-100 rounded-full px-3 py-1.5 text-[10px] font-bold text-gray-600 cursor-pointer flex items-center gap-1 active:scale-95 transition-all hover:bg-gray-50">
+                  <ImageIcon className="w-3 h-3" /> Galeri
+                  <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                </label>
+                <label className="bg-white shadow-sm border border-gray-100 rounded-full px-3 py-1.5 text-[10px] font-bold text-gray-600 cursor-pointer flex items-center gap-1 active:scale-95 transition-all hover:bg-gray-50">
+                  <Camera className="w-3 h-3" /> Kamera
+                  <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="hidden" />
+                </label>
               </div>
             </div>
 
@@ -655,7 +825,12 @@ function BookApp() {
       setUser(currentUser);
       setIsLoading(false);
     });
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (scannerRef.current) {
+        stopScanner();
+      }
+    };
   }, []);
 
   const handleLogin = async () => {
@@ -723,6 +898,7 @@ function BookApp() {
       page: '', 
       coverUrl: '', 
       price: 0,
+      synopsis: '',
       addedAt: Date.now(),
       updatedAt: Date.now()
     };
@@ -747,6 +923,7 @@ function BookApp() {
       page: currentBook.isRead ? '' : (currentBook.page || '0'),
       coverUrl: currentBook.coverUrl || '',
       price: currentBook.price || 0,
+      synopsis: currentBook.synopsis || '',
       updatedAt: Date.now(),
       addedAt: currentBook.addedAt || Date.now()
     };
@@ -782,11 +959,26 @@ function BookApp() {
   // --- API Pencarian Cerdas ---
   const handleSmartSearch = async (type: 'title' | 'isbn' = 'title', customIsbn?: string) => {
     const queryStr = type === 'isbn' ? `isbn:${customIsbn || isbnInput}` : `intitle:${currentBook.title}`;
-    if (!queryStr) return;
+    if (!queryStr) {
+      alert('Masukkan kata kunci pencarian terlebih dahulu.');
+      return;
+    }
     
     setIsSearchingApi(true);
     try {
-      const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}`);
+      const apiKey = import.meta.env.VITE_GOOGLE_BOOKS_API_KEY;
+      const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(queryStr)}&maxResults=1${apiKey ? `&key=${apiKey}` : ''}`;
+      
+      const response = await fetch(url);
+      
+      if (response.status === 429) {
+        throw new Error("Terlalu banyak permintaan (Limit tercapai). Harap masukkan API Key di pengaturan atau tunggu beberapa saat.");
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Gagal menghubungi layanan Google (Status: ${response.status})`);
+      }
+      
       const data = await response.json();
       
       if (data.items && data.items.length > 0) {
@@ -803,7 +995,6 @@ function BookApp() {
           } else if (currency === 'USD') {
             fetchedPrice = amount * 17000;
           } else {
-            // Default factor for others if any, or just treat as USD for estimation
             fetchedPrice = amount * 17000;
           }
         }
@@ -811,16 +1002,18 @@ function BookApp() {
         setCurrentBook(prev => ({
           ...prev,
           title: info.title || prev.title,
-          author: info.authors ? info.authors.join(', ') : prev.author,
+          author: info.authors ? info.authors.join(', ') : (prev.author === 'Anonim' ? '' : prev.author),
           coverUrl: info.imageLinks?.thumbnail?.replace('http:', 'https:') || prev.coverUrl,
           price: fetchedPrice || prev.price,
+          synopsis: info.description || prev.synopsis,
         }));
         if (type === 'isbn') setIsbnInput('');
       } else { 
-        alert('Data buku tidak ditemukan.'); 
+        alert('Data buku tidak ditemukan di Google Books.'); 
       }
-    } catch (error) { 
+    } catch (error: any) { 
       console.error(error); 
+      alert('Terjadi kesalahan pencarian: ' + (error.message || 'Masalah koneksi internet'));
     } finally { 
       setIsSearchingApi(false); 
     }
